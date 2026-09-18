@@ -1,0 +1,21 @@
+# Maxfiy fayllar
+.env
+cookies.txt
+instagram_cookies.txt
+
+# Vaqtinchalik
+downloads/
+temp_audio/
+bot.log
+*.log
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# IDE
+.vscode/
+.idea/
