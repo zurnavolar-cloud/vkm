@@ -59,8 +59,6 @@ class Config:
     SESSION_TIMEOUT = int(os.getenv("SESSION_TIMEOUT", 180))
     MAX_AUDIO_DURATION = 600
     UPLOAD_TIMEOUT = 120
-    # bgutil POT provider script joylashuvi (Dockerfile'da klonlangan)
-    BGUTIL_SERVER_HOME = os.getenv("BGUTIL_SERVER_HOME", "/app/bgutil/server")
 
 if not Config.BOT_TOKEN:
     raise ValueError("❌ BOT_TOKEN topilmadi!")
@@ -202,14 +200,17 @@ def extract_artist_title(full_title: str):
     return clean_artist.strip(), clean_title
 
 def get_cookies_for_platform(platform='youtube'):
+    """Cookie faqat YouTube bo'lmagan platformalar uchun"""
     opts = {}
     if platform == 'instagram' and os.path.exists(Config.INSTAGRAM_COOKIES_PATH):
         opts['cookiefile'] = Config.INSTAGRAM_COOKIES_PATH
-    elif os.path.exists(Config.COOKIES_PATH):
+    elif platform in ['tiktok', 'facebook'] and os.path.exists(Config.COOKIES_PATH):
         opts['cookiefile'] = Config.COOKIES_PATH
+    # YouTube uchun cookie ISHLATILMAYDI (android/ios client ishlatiladi)
     return opts
 
 def get_ydl_opts(output_path, format_type='video', platform='youtube'):
+    """yt-dlp sozlamalari - YouTube uchun android/ios client"""
     opts = {
         'outtmpl': output_path,
         'quiet': True,
@@ -218,27 +219,43 @@ def get_ydl_opts(output_path, format_type='video', platform='youtube'):
         'fragment_retries': 5,
         'retry_sleep': 3,
         'socket_timeout': Config.SOCKET_TIMEOUT,
-        'http_headers': {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
     }
     
-    # Node.js runtime (EJS uchun)
-    if shutil.which('node'):
-        opts['js_runtimes'] = {'node': {}}
-        opts['remote_components'] = ['ejs:github']
-    
-    # bgutil POT provider (script usuli)
-    if platform == 'youtube' and os.path.exists(Config.BGUTIL_SERVER_HOME):
+    if platform == 'youtube':
+        # ANDROID CLIENT - PO Token kerak emas, IP blokirovkasi yo'q
         opts['extractor_args'] = {
-            'youtubepot-bgutilscript': {
-                'server_home': [Config.BGUTIL_SERVER_HOME]
+            'youtube': {
+                'player_client': ['android', 'ios', 'web_safari'],
+                'player_skip': ['webpage', 'configs'],
             }
         }
-        logger.info(f"🔑 PO Token script ishlatilmoqda: {Config.BGUTIL_SERVER_HOME}")
+        opts['http_headers'] = {
+            'User-Agent': 'com.google.android.youtube/19.09.37 (Linux; U; Android 11) gzip'
+        }
+    else:
+        # Boshqa platformalar uchun standart User-Agent
+        opts['http_headers'] = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        }
+        # Node.js faqat YouTube bo'lmagan platformalar uchun kerak emas
+        # lekin Instagram ba'zan talab qiladi
+        if platform == 'instagram' and shutil.which('node'):
+            opts['js_runtimes'] = {'node': {}}
     
     if format_type == 'video':
-        opts.update({'format': 'best[height<=720][ext=mp4]/best[ext=mp4]', 'merge_output_format': 'mp4'})
+        opts.update({
+            'format': 'best[height<=720][ext=mp4]/best[ext=mp4]',
+            'merge_output_format': 'mp4'
+        })
     elif format_type == 'audio':
-        opts.update({'format': 'bestaudio/best', 'postprocessors': [{'key': 'FFmpegExtractAudio', 'preferredcodec': 'mp3', 'preferredquality': '192'}]})
+        opts.update({
+            'format': 'bestaudio/best',
+            'postprocessors': [{
+                'key': 'FFmpegExtractAudio',
+                'preferredcodec': 'mp3',
+                'preferredquality': '192'
+            }]
+        })
     
     opts.update(get_cookies_for_platform(platform))
     return opts
@@ -296,21 +313,32 @@ async def download_mp3(url, user_id):
     def run():
         try:
             platform = get_platform(url)
+            
+            # Tekshiruv - android client bilan
             check_opts = {'quiet': True, 'no_warnings': True, 'extract_flat': False}
-            check_opts.update(get_cookies_for_platform(platform))
-            if shutil.which('node'):
-                check_opts['js_runtimes'] = {'node': {}}
-                check_opts['remote_components'] = ['ejs:github']
-            if platform == 'youtube' and os.path.exists(Config.BGUTIL_SERVER_HOME):
+            
+            if platform == 'youtube':
                 check_opts['extractor_args'] = {
-                    'youtubepot-bgutilscript': {
-                        'server_home': [Config.BGUTIL_SERVER_HOME]
+                    'youtube': {
+                        'player_client': ['android', 'ios', 'web_safari'],
+                        'player_skip': ['webpage', 'configs'],
                     }
                 }
+                check_opts['http_headers'] = {
+                    'User-Agent': 'com.google.android.youtube/19.09.37 (Linux; U; Android 11) gzip'
+                }
+            else:
+                check_opts['http_headers'] = {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+                }
+                check_opts.update(get_cookies_for_platform(platform))
+            
             with yt_dlp.YoutubeDL(check_opts) as ydl:
                 info = ydl.extract_info(url, download=False)
                 if info.get('duration', 0) > Config.MAX_AUDIO_DURATION:
                     return None, f"VIDEO_JUDA_UZUN:{info['duration']}"
+            
+            # Yuklash
             output_path = str(Config.DOWNLOADS_PATH / f"a_{user_id}_{int(time.time())}_%(title)s.%(ext)s")
             opts = get_ydl_opts(output_path, 'audio', platform)
             with yt_dlp.YoutubeDL(opts) as ydl:
@@ -327,8 +355,20 @@ async def download_mp3(url, user_id):
 async def search_songs(query, limit=10):
     def run():
         try:
-            opts = get_ydl_opts('', 'video', 'youtube')
-            opts.update({'quiet': True, 'no_warnings': True, 'extract_flat': True})
+            opts = {
+                'quiet': True,
+                'no_warnings': True,
+                'extract_flat': True,
+                'extractor_args': {
+                    'youtube': {
+                        'player_client': ['android', 'ios', 'web_safari'],
+                        'player_skip': ['webpage', 'configs'],
+                    }
+                },
+                'http_headers': {
+                    'User-Agent': 'com.google.android.youtube/19.09.37 (Linux; U; Android 11) gzip'
+                }
+            }
             with yt_dlp.YoutubeDL(opts) as ydl:
                 info = ydl.extract_info(f"ytsearch{limit}:{query}", download=False)
                 songs = []
@@ -342,7 +382,8 @@ async def search_songs(query, limit=10):
                                           'full_title': ft[:80], 'duration': format_duration(d),
                                           'duration_seconds': d, 'url': f"https://youtube.com/watch?v={item['id']}"})
                 return songs
-        except:
+        except Exception as e:
+            logger.error(f"Qidirish xatosi: {e}")
             return []
     return await asyncio.get_event_loop().run_in_executor(pool, run)
 
@@ -481,6 +522,8 @@ async def process_url(message, url, user_id):
                 await message.answer("❌ Instagram login kerak!")
             elif "bo'sh" in err.lower():
                 await message.answer("❌ Yuklangan fayl bo'sh! Qayta urinib ko'ring.")
+            elif "sign in" in err.lower() or "bot" in err.lower():
+                await message.answer("❌ YouTube bloklayapti. Boshqa video sinab ko'ring yoki qayta yuboring.")
             else:
                 await message.answer(f"❌ {err[:150]}")
     except Exception as e:
@@ -739,7 +782,7 @@ async def main():
         logger.info(f"🎤 Shazam: {'✅' if SHAZAM_AVAILABLE else '❌'} | FFmpeg: {'✅' if shutil.which('ffmpeg') else '❌'}")
         logger.info(f"🟢 Node: {'✅' if shutil.which('node') else '❌'}")
         logger.info(f"🍪 YT: {'✅' if os.path.exists(Config.COOKIES_PATH) else '❌'} | IG: {'✅' if os.path.exists(Config.INSTAGRAM_COOKIES_PATH) else '❌'}")
-        logger.info(f"🔑 PO Token: {'✅' if os.path.exists(Config.BGUTIL_SERVER_HOME) else '❌'} ({Config.BGUTIL_SERVER_HOME})")
+        logger.info(f"📱 YouTube: Android client ishlatilmoqda")
         logger.info(f"⏱️ MP3≤10min | ⏫ {Config.UPLOAD_TIMEOUT}s")
     except:
         pass
