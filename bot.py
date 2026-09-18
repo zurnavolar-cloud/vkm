@@ -59,6 +59,8 @@ class Config:
     SESSION_TIMEOUT = int(os.getenv("SESSION_TIMEOUT", 180))
     MAX_AUDIO_DURATION = 600
     UPLOAD_TIMEOUT = 120
+    # PO Token server manzili (Docker konteyneri ichida)
+    POT_PROVIDER_URL = os.getenv("POT_PROVIDER_URL", "http://127.0.0.1:4416")
 
 if not Config.BOT_TOKEN:
     raise ValueError("❌ BOT_TOKEN topilmadi!")
@@ -218,9 +220,20 @@ def get_ydl_opts(output_path, format_type='video', platform='youtube'):
         'socket_timeout': Config.SOCKET_TIMEOUT,
         'http_headers': {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
     }
+    
+    # JS runtime (Node.js)
     if shutil.which('node'):
         opts['js_runtimes'] = {'node': {}}
         opts['remote_components'] = ['ejs:github']
+    
+    # PO Token Provider (YouTube uchun)
+    if platform == 'youtube':
+        opts['extractor_args'] = {
+            'youtubepot-bgutilhttp': {
+                'base_url': [Config.POT_PROVIDER_URL]
+            }
+        }
+    
     if format_type == 'video':
         opts.update({'format': 'best[height<=720][ext=mp4]/best[ext=mp4]', 'merge_output_format': 'mp4'})
     elif format_type == 'audio':
@@ -286,6 +299,10 @@ async def download_mp3(url, user_id):
             if shutil.which('node'):
                 check_opts['js_runtimes'] = {'node': {}}
                 check_opts['remote_components'] = ['ejs:github']
+            if platform == 'youtube':
+                check_opts['extractor_args'] = {
+                    'youtubepot-bgutilhttp': {'base_url': [Config.POT_PROVIDER_URL]}
+                }
             with yt_dlp.YoutubeDL(check_opts) as ydl:
                 info = ydl.extract_info(url, download=False)
                 if info.get('duration', 0) > Config.MAX_AUDIO_DURATION:
@@ -718,6 +735,7 @@ async def main():
         logger.info(f"🎤 Shazam: {'✅' if SHAZAM_AVAILABLE else '❌'} | FFmpeg: {'✅' if shutil.which('ffmpeg') else '❌'}")
         logger.info(f"🟢 Node: {'✅' if shutil.which('node') else '❌'}")
         logger.info(f"🍪 YT: {'✅' if os.path.exists(Config.COOKIES_PATH) else '❌'} | IG: {'✅' if os.path.exists(Config.INSTAGRAM_COOKIES_PATH) else '❌'}")
+        logger.info(f"🔑 PO Token URL: {Config.POT_PROVIDER_URL}")
         logger.info(f"⏱️ MP3≤10min | ⏫ {Config.UPLOAD_TIMEOUT}s")
     except:
         pass
